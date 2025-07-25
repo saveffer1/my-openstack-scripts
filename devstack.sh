@@ -35,9 +35,39 @@ BRANCH=${BRANCH:-stable/2025.1}
 
 # === Create User ===
 echo "[*] Creating user 'stack'..."
-useradd -s /bin/bash -d /opt/stack -m stack || echo "[*] user 'stack' already exists."
-chmod +x /opt/stack
-echo "stack ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/stack
+STACK_USER=stack
+DEST=/opt/stack
+
+# Ensure group exists
+if ! getent group $STACK_USER >/dev/null; then
+    groupadd $STACK_USER
+fi
+
+# Ensure user exists
+if ! id -u $STACK_USER >/dev/null 2>&1; then
+    useradd -g $STACK_USER -s /bin/bash -d $DEST -m $STACK_USER
+fi
+
+# Ensure DEST exists (important if -m fails)
+if [[ ! -d "$DEST" ]]; then
+    mkdir -p "$DEST"
+    chown "$STACK_USER:$STACK_USER" "$DEST"
+fi
+
+# Ensure DEST has executable bits for traversal
+if [[ $(stat -c '%A' "$DEST" | grep -o x | wc -l) -lt 3 ]]; then
+    chmod +x "$DEST"
+fi
+
+# Add sudoers include if missing
+if ! grep -q "^#includedir.*/etc/sudoers.d" /etc/sudoers; then
+    echo "#includedir /etc/sudoers.d" >> /etc/sudoers
+fi
+
+# Grant NOPASSWD sudo to stack user
+echo "$STACK_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/50_stack_sh
+chmod 440 /etc/sudoers.d/50_stack_sh
+
 
 # === Set Password ===
 HASH=$(openssl passwd -6 -salt "$(openssl rand -hex 8)" "$STACK_PASS")
@@ -45,19 +75,22 @@ echo "stack:${HASH}" | chpasswd -e
 
 # === Clone DevStack ===
 echo "[*] Cloning DevStack branch ${BRANCH}..."
-sudo -u stack bash -c "
-    cd /opt/stack
-    if [[ ! -d devstack ]]; then
-        git clone -b ${BRANCH} https://opendev.org/openstack/devstack
-    fi
-    cd devstack
-    cp samples/local.conf local.conf
-"
+sudo -u stack -i bash <<EOF
+set -euo pipefail
+cd /opt/stack
+if [[ ! -d devstack ]]; then
+    git clone -b ${BRANCH} https://opendev.org/openstack/devstack
+fi
+cd devstack
+cp samples/local.conf /opt/stack/devstack/local.conf
+EOF
+
 
 # === Generate local.conf ===
 echo "[*] Generating local.conf..."
-cat <<EOF > local.conf
-[[local|localrc]]
+sudo -u stack -i tee /opt/stack/devstack/local.conf >/dev/null <<EOF
+#saveffer
+#[[local|localrc]]
 HOST_IP=$HOST_IP
 FLOATING_RANGE=$FLOATING_RANGE
 IP_VERSION=4
@@ -65,7 +98,7 @@ EOF
 
 # === Install Devstack ===
 echo "[*] Installing DevStack..."
-sudo byobu ~/devstack/stack.sh
+sudo -u stack -i bash /opt/stack/devstack/stack.sh
 echo "[*] DevStack installation completed successfully."
 
 # === Install openstackclient ===
@@ -77,7 +110,7 @@ echo "=== Installation Complete ==="
 echo "DevStack has been installed successfully."
 echo "=== Post-installation Instructions ==="
 echo "1. Source the DevStack environment:"
-echo "   source ~/devstack/openrc"
+echo "   source /opt/stack/openrc"
 echo "2. Show images:"
 echo "   openstack image list"
 echo "3. Access the Horizon dashboard at:"

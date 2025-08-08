@@ -3,6 +3,9 @@ import sys
 from multiprocessing import Pool, cpu_count
 import itertools
 
+# install openstacksdk first
+# need to load openrc before run this script
+
 def create_network_task(network_number):
     """
     create network & subnet for testing
